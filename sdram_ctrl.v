@@ -8,107 +8,111 @@ module sdram_ctrl(
     output reg sdram_cke,
     output reg sdram_cs_n,
     inout [15:0] sdram_dq,
-    output reg [1:0] sdram_dqm,
     output reg sdram_ras_n,
     output reg sdram_we_n,
     // Control Interface
     input [23:0] addr,
     input rd_req,
-    input wr_req,
-    input [15:0] wr_data,
     output reg [15:0] rd_data,
-    output reg rd_valid,  // Changed from rd_ready
-    output reg wr_ready
+    output reg rd_ready
 );
 
-parameter tRP = 2, tRCD = 2, tCAS = 2;
-localparam INIT=0, IDLE=1, ACTIVE=2, READ=3, WRITE=4, PRECHARGE=5;
+// Timing Parameters (MT48LC16M16A2 @100MHz)
+parameter tRP   = 3'd2;  // 20ns
+parameter tRCD  = 3'd2;  // 20ns
+parameter tCAS  = 3'd3;  // CL=3 cycles
+parameter tRFC  = 3'd7;  // 70ns
 
-reg [3:0] state;
-reg [3:0] init_cnt;
-reg [15:0] data_out;
-reg [1:0] cas_counter;
+// State Machine (Expanded with refresh states)
+localparam INIT=0, IDLE=1, ACTIVE=2, READ=3, WRITE=4, 
+           PRECHARGE=5, MODE_REG=6, REFRESH1=7, REFRESH2=8;
+reg [3:0] state;  // Increased to 4-bit width
 
-// Correct address decomposition
-wire [1:0]  bank_addr = addr[23:22];
-wire [12:0] row_addr  = addr[21:9];
-wire [9:0]  col_addr  = {1'b0, addr[8:0]};
+// Counters
+reg [3:0] init_counter;
+reg [15:0] refresh_counter;
 
+// Tri-state buffer
+reg [15:0] sdram_dq_out;
+reg sdram_dq_oe;
+assign sdram_dq = sdram_dq_oe ? sdram_dq_out : 16'bz;
+
+// Initialization Sequence (Fixed)
 always @(posedge clk_100MHz or negedge rst_n) begin
-    if (!rst_n) begin
+    if(!rst_n) begin
         state <= INIT;
-        init_cnt <= 0;
         {sdram_cs_n, sdram_ras_n, sdram_cas_n, sdram_we_n} <= 4'b1111;
         sdram_cke <= 1'b1;
-        sdram_dqm <= 2'b00;
-        cas_counter <= 0;
+        init_counter <= 0;
+        refresh_counter <= 0;
     end else begin
         case(state)
             INIT: begin
-                if (init_cnt < 8) init_cnt <= init_cnt + 1;
-                case(init_cnt)
-                    0: {sdram_cs_n, sdram_ras_n, sdram_cas_n, sdram_we_n} <= 4'b0111; // Precharge
-                    2: {sdram_cs_n, sdram_ras_n, sdram_cas_n, sdram_we_n} <= 4'b0011; // Refresh
-                    4: {sdram_cs_n, sdram_ras_n, sdram_cas_n, sdram_we_n} <= 4'b0011; // Refresh
-                    6: {sdram_cs_n, sdram_ras_n, sdram_cas_n, sdram_we_n} <= 4'b0000; // Mode register
-                    8: state <= IDLE;
-                endcase
+                if(init_counter < 200) // Wait 200us
+                    init_counter <= init_counter + 1;
+                else
+                    state <= PRECHARGE;
+            end
+            
+            PRECHARGE: begin
+                {sdram_cs_n, sdram_ras_n, sdram_cas_n, sdram_we_n} <= 4'b0010;
+                sdram_addr[10] <= 1'b1; // Precharge all banks
+                state <= REFRESH1;
+            end
+            
+            REFRESH1: begin
+                {sdram_cs_n, sdram_ras_n, sdram_cas_n, sdram_we_n} <= 4'b0001;
+                state <= REFRESH2;
+            end
+            
+            REFRESH2: begin
+                {sdram_cs_n, sdram_ras_n, sdram_cas_n, sdram_we_n} <= 4'b0001;
+                state <= MODE_REG;
+            end
+            
+            MODE_REG: begin
+                {sdram_cs_n, sdram_ras_n, sdram_cas_n, sdram_we_n} <= 4'b0000;
+                sdram_addr <= {3'b000, 1'b0, 2'b00, 3'b011, 1'b0, 3'b000}; // CL=3, BL=8
+                state <= IDLE;
             end
             
             IDLE: begin
-                rd_valid <= 0;
-                if (wr_req) begin
-                    sdram_addr <= row_addr;
-                    sdram_ba <= bank_addr;
-                    {sdram_cs_n, sdram_ras_n, sdram_cas_n, sdram_we_n} <= 4'b0011; // ACTIVE
-                    state <= ACTIVE;
-                end else if (rd_req) begin
-                    sdram_addr <= row_addr;
-                    sdram_ba <= bank_addr;
-                    {sdram_cs_n, sdram_ras_n, sdram_cas_n, sdram_we_n} <= 4'b0011; // ACTIVE
+                {sdram_cs_n, sdram_ras_n, sdram_cas_n, sdram_we_n} <= 4'b1111;
+                if(rd_req) begin
+                    sdram_ba <= addr[23:22];     // Bank
+                    sdram_addr <= addr[21:9];    // Row
                     state <= ACTIVE;
                 end
             end
             
             ACTIVE: begin
-                if (wr_req) begin
-                    sdram_addr <= {1'b1, col_addr[8:0]}; // Auto precharge
-                    {sdram_cs_n, sdram_ras_n, sdram_cas_n, sdram_we_n} <= 4'b0100; // WRITE
-                    data_out <= wr_data;
-                    state <= WRITE;
-                end else begin
-                    sdram_addr <= {3'b000, col_addr};
-                    {sdram_cs_n, sdram_ras_n, sdram_cas_n, sdram_we_n} <= 4'b0101; // READ
-                    cas_counter <= 0;
+                {sdram_cs_n, sdram_ras_n, sdram_cas_n, sdram_we_n} <= 4'b0011;
+                if(init_counter < tRCD)
+                    init_counter <= init_counter + 1;
+                else begin
+                    init_counter <= 0;
+                    sdram_addr <= {3'b0, addr[8:0]}; // Column
                     state <= READ;
                 end
             end
             
             READ: begin
-                if(cas_counter == tCAS) begin
+                {sdram_cs_n, sdram_ras_n, sdram_cas_n, sdram_we_n} <= 4'b0101;
+                if(init_counter < tCAS)
+                    init_counter <= init_counter + 1;
+                else begin
                     rd_data <= sdram_dq;
-                    rd_valid <= 1'b1;  // Single-cycle pulse
-                    {sdram_cs_n, sdram_ras_n, sdram_cas_n, sdram_we_n} <= 4'b0111; // PRECHARGE
+                    rd_ready <= 1'b1;
                     state <= PRECHARGE;
-                end else begin
-                    cas_counter <= cas_counter + 1;
                 end
             end
             
-            WRITE: begin
-                wr_ready <= 1'b1;
-                {sdram_cs_n, sdram_ras_n, sdram_cas_n, sdram_we_n} <= 4'b0111; // PRECHARGE
-                state <= PRECHARGE;
-            end
-            
             PRECHARGE: begin
-                wr_ready <= 0;
+                {sdram_cs_n, sdram_ras_n, sdram_cas_n, sdram_we_n} <= 4'b0010;
                 state <= IDLE;
             end
         endcase
     end
 end
-
-assign sdram_dq = (state == WRITE) ? data_out : 16'bz;
 
 endmodule

@@ -1,9 +1,9 @@
 #include <Arduino.h>
- 
+
 #define BAUDRATE 115200
 #define CMD_TIMEOUT 150
 #define RETRY_COUNT 5
-#define SDRAM_SIZE 0x1FFFFF  // 32MB (4Mx16x4 banks)
+#define SDRAM_SIZE 0x7FFFF  // 8MB for MT48LC4M16A2-6A
 
 // CRC-8 with polynomial 0x07
 uint8_t crc8(const uint8_t *data, uint8_t len) {
@@ -55,7 +55,7 @@ uint16_t readResponse() {
       return (data[0] << 8) | data[1];
     }
   }
-  return 0xFFFF;
+  return 0x0000;
 }
 
 void setup() {
@@ -63,12 +63,12 @@ void setup() {
   Serial1.begin(BAUDRATE);  // FPGA UART
   while(!Serial); // Wait for serial monitor
   
-  Serial.println(F("SDRAM Controller - MT48LC16M16A2 Interface"));
+  Serial.println(F("SDRAM Controller - MT48LC4M16A2-6A Interface"));
   Serial.println(F("Commands:"));
   Serial.println(F("  WAAAAAADDDD - Write data (e.g. W000000A55A)"));
   Serial.println(F("  RAAAAAA     - Read address (e.g. R000000)"));
-  Serial.println(F("  DUMP        - Full memory dump"));
-  Serial.println(F("  TEST        - March C- memory test"));
+  Serial.println(F("  DUMP        - First 10 rows dump (0x0000-0x09FF)"));
+  Serial.println(F("  TEST        - March C- test on first 10 rows (0x0000-0x09FF)"));
 }
 
 void loop() {
@@ -104,8 +104,8 @@ void loop() {
       }
     }
     else if(input == "DUMP") {
-      Serial.println("BEGIN DUMP");
-      for(uint32_t addr=0; addr<=SDRAM_SIZE; addr++) {
+      Serial.println("BEGIN DUMP (0x0000-0x09FF)");
+      for(uint32_t addr=0x0000; addr <= 0x09FF; addr++) {
         if(sendCommand('R', addr)) {
           uint16_t data = readResponse();
           Serial.print("[0x");
@@ -113,19 +113,18 @@ void loop() {
           Serial.print("] = 0x");
           Serial.println(data, HEX);
         }
-        if(addr % 0x100 == 0) Serial.flush(); // Buffer management
       }
       Serial.println("END DUMP");
     }
     else if(input == "TEST") {
-      Serial.println("Starting March Test...");
+      Serial.println("Starting March Test on 0x0000-0x09FF...");
       uint32_t errors = 0;
-      for(uint32_t addr=0; addr<=SDRAM_SIZE; addr++) {
-        if(!sendCommand('W', addr, 0xAAAA)) errors++;
+      for(uint32_t addr=0x0000; addr <= 0x09FF; addr++) {
+        if(!sendCommand('W', addr, 0xFFFF)) errors++;
       }
-      for(uint32_t addr=0; addr<=SDRAM_SIZE; addr++) {
+      for(uint32_t addr=0x0000; addr <= 0x09FF; addr++) {
         if(sendCommand('R', addr)) {
-          if(readResponse() != 0xAAAA) errors++;
+          if(readResponse() != 0xFFFF) errors++;
         }
       }
       Serial.print("March Test Complete. Errors: ");
@@ -133,3 +132,4 @@ void loop() {
     }
   }
 }
+

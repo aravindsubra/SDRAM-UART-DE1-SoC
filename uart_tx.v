@@ -1,6 +1,6 @@
 module uart_tx(
-    input clk,
     input rst_n,
+    input clk,
     input [7:0] data,
     input send,
     output reg tx,
@@ -41,3 +41,4 @@ always @(posedge clk or negedge rst_n) begin
     end
 end
 endmodule
+

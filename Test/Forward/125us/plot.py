@@ -1,0 +1,110 @@
+import matplotlib.pyplot as plt
+
+# New dataset
+data = [
+    (0x0, 0x0),
+    (0x80, 0xB100),
+    (0xBC, 0xAA00),
+    (0xEF, 0x3300),
+    (0xF2, 0xFFFF),
+    (0x1DF, 0xC4),
+    (0x1F5, 0xFFFF),
+    (0x2A5, 0xFFFF),
+    (0x300, 0x8000),
+    (0x309, 0x0),
+    (0x3BB, 0xFFFF),
+    (0x481, 0xFFFF),
+    (0x531, 0xFFFF),
+    (0x5A4, 0xFFFF),
+    (0x5A5, 0xFFFF),
+    (0x5E1, 0x1),
+    (0x62E, 0xFE),
+    (0x62F, 0xFE5B),
+    (0x633, 0x1300),
+    (0x637, 0x1300),
+    (0x63E, 0x202),
+    (0x643, 0x30B),
+    (0x646, 0x1B00),
+    (0x649, 0x0),
+    (0x686, 0x4B00),
+    (0x687, 0x0),
+    (0x688, 0x0),
+    (0x689, 0x0),
+    (0x68A, 0x0),
+    (0x68B, 0x0),
+    (0x68C, 0x0),
+    (0x68D, 0x0),
+    (0x68E, 0x0),
+    (0x68F, 0x0),
+    (0x690, 0x0),
+    (0x692, 0x0),
+    (0x693, 0x0),
+    (0x694, 0x0),
+    (0x695, 0x0),
+    (0x696, 0x0),
+    (0x697, 0x0),
+    (0x698, 0x0),
+    (0x699, 0x0),
+    (0x69B, 0x400),
+    (0x69F, 0x24B),
+    (0x6A2, 0x3),
+    (0x6BC, 0xBFA),
+    (0x6C6, 0x2),
+    (0x6C7, 0x0),
+    (0x6C8, 0x0),
+    (0x6CA, 0x0),
+    (0x6CB, 0x0),
+    (0x6CC, 0x0),
+    (0x6CE, 0x0),
+    (0x6CF, 0x0),
+    (0x6D0, 0x0),
+    (0x6D7, 0x303),
+    (0x6E0, 0xFFFF),
+    (0x6EF, 0x6),
+    (0x715, 0xBA),
+    (0x7E7, 0xFFFF),
+    (0x800, 0xA00),
+    (0x838, 0x0),
+    (0x8CA, 0xFFFF),
+    (0x93F, 0xBA),
+    (0x9CD, 0xFFFF),
+]
+
+PATTERN = 0xFFFF
+X_LIMIT = 0x9CD  # Plot up to highest address
+
+# Filter and sort data
+filtered_data = sorted([(addr, val) for addr, val in data if addr <= X_LIMIT], key=lambda x: x[0])
+addresses = [addr for addr, _ in filtered_data]
+bit_flips = [bin(PATTERN ^ val).count('1') for _, val in filtered_data]
+
+# Plot
+plt.figure(figsize=(12, 6))
+(markerline, stemlines, baseline) = plt.stem(addresses, bit_flips, linefmt='g-', markerfmt=' ', basefmt='k-')
+plt.setp(stemlines, linewidth=0.5)
+
+plt.title('Bit Flips vs. Memory Address (Refresh: 125µs)', fontsize=14)
+plt.xlabel('Memory Address (Hex)', fontsize=12)
+plt.ylabel('Bit Flips', fontsize=12)
+plt.grid(True, alpha=0.3)
+
+# Uniform x-axis ticks
+xtick_step = 0x100  # Adjust spacing if needed
+xticks = list(range(min(addresses), X_LIMIT + 1, xtick_step))
+xtick_labels = [f'0x{addr:X}' for addr in xticks]
+plt.xticks(xticks, xtick_labels, rotation=45, ha='right')
+plt.xlim(min(addresses), X_LIMIT)
+
+# Stats
+total_flips = sum(bit_flips)
+affected_addrs = sum(1 for b in bit_flips if b > 0)
+max_flips = max(bit_flips)
+max_addr = addresses[bit_flips.index(max_flips)]
+stats_text = f"Max Bit Flips: {max_flips} at 0x{max_addr:X}"
+
+plt.figtext(0.99, 0.01, stats_text, fontsize=9, ha='right')
+
+# Save and show
+plt.tight_layout()
+plt.savefig('bit_flips_new_dataset.png', dpi=300)
+plt.show()

@@ -1,124 +1,144 @@
-module sdram_ctrl(
-    input clk,             // 50MHz clock
-    input rst_n,
-    output reg [12:0] sdram_addr,
-    output reg [1:0] sdram_ba,
-    output reg sdram_cas_n,
-    output reg sdram_cke,
-    output reg sdram_cs_n,
-    inout [15:0] sdram_dq,
-    output reg sdram_ras_n,
-    output reg sdram_we_n,
-    input [23:0] addr,
-    input rd_req,
-    input wr_req,
-    input [15:0] wr_data,
-    output reg [15:0] rd_data,
-    output reg rd_ready,
-    output reg wr_ready
-);
+#define BAUDRATE 115200
+#define CMD_TIMEOUT 150
+#define RETRY_COUNT 8
+#define ROW_SIZE 1024
 
-// Timing for 167MHz (6ns per cycle): tRP=3, tRCD=3, tCAS=3, tMRD=2
-parameter tINIT  = 33_333; // 200us / 6ns = ~33,333 cycles @167MHz
-parameter tRP    = 3;      // 18ns
-parameter tRCD   = 3;      // 18ns
-parameter tCAS   = 3;      // 18ns
-parameter tMRD   = 2;      // 12ns
+uint8_t crc8(const uint8_t *data, uint8_t len) {
+    uint8_t crc = 0x00;
+    while(len--) {
+        crc ^= *data++;
+        for(uint8_t i=0; i<8; i++)
+            crc = (crc & 0x80) ? (crc << 1) ^ 0x07 : crc << 1;
+    }
+    return crc;
+}
 
-// Refresh interval per row is 62.5 microseconds
-parameter REFRESH_INTERVAL_PER_ROW = 16'd6250;
+bool sendCommand(char cmd, uint32_t addr, uint16_t data=0) {
+    uint8_t packet[8] = {
+        (uint8_t)cmd,
+        (uint8_t)(addr >> 16),
+        (uint8_t)(addr >> 8),
+        (uint8_t)addr,
+        (uint8_t)(data >> 8),
+        (uint8_t)data,
+        0, // CRC placeholder
+        0  // Sequence
+    };
+    packet[6] = crc8(packet, 6);
+    
+    for(uint8_t retry=0; retry<RETRY_COUNT; retry++) {
+        Serial1.write(packet, 8);
+        
+        unsigned long start = millis();
+        while(millis() - start < CMD_TIMEOUT) {
+            if(Serial1.available() >= 3) {
+                uint8_t response[3];
+                Serial1.readBytes(response, 3);
+                if(response[2] == crc8(response, 2)) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
 
-localparam INIT=0, PRECHARGE=1, MODE_REG=2, IDLE=3, ACT=4, WRITE=5, READ=6, DONE=7;
+uint16_t readResponse() {
+    unsigned long start = millis();
+    while(millis() - start < CMD_TIMEOUT) {
+        if(Serial1.available() >= 2) {
+            uint8_t data[2];
+            Serial1.readBytes(data, 2);
+            return (data[0] << 8) | data[1];
+        }
+    }
+    return 0xFFFF;
+}
 
-reg [3:0] state;
-reg [15:0] timer;
-reg [15:0] dq_out;
-reg dq_oe;
+void setup() {
+    Serial.begin(BAUDRATE);
+    Serial1.begin(BAUDRATE);
+    while(!Serial);
+    
+    Serial.println(F("SDRAM Controller Interface"));
+    Serial.println(F("Commands:"));
+    Serial.println(F(" WAAAAAADDDD - Write 16-bit data"));
+    Serial.println(F(" RAAAAAA     - Read address"));
+    Serial.println(F(" DUMP        - Dump first 10 rows"));
+    Serial.println(F(" TEST        - March C- test"));
+}
 
-assign sdram_dq = dq_oe ? dq_out : 16'bz;
+void loop() {
+    if(Serial.available()) {
+        String input = Serial.readStringUntil('\n');
+        input.trim();
+        input.toUpperCase();
 
-always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-        state <= INIT;
-        {sdram_cs_n, sdram_ras_n, sdram_cas_n, sdram_we_n} <= 4'b1111;
-        sdram_cke <= 1'b1;
-        timer <= 0;
-        dq_oe <= 0;
-        rd_ready <= 0;
-        wr_ready <= 0;
-    end else begin
-        rd_ready <= 0;
-        wr_ready <= 0;
-        case(state)
-            INIT: begin
-                if (timer < tINIT) timer <= timer + 1;
-                else begin timer <= 0; state <= PRECHARGE; end
-            end
-            PRECHARGE: begin
-                {sdram_cs_n, sdram_ras_n, sdram_cas_n, sdram_we_n} <= 4'b0010;
-                sdram_addr[10] <= 1'b1;
-                timer <= 0;
-                state <= MODE_REG;
-            end
-            MODE_REG: begin
-                if (timer < tMRD) timer <= timer + 1;
-                else begin
-                    {sdram_cs_n, sdram_ras_n, sdram_cas_n, sdram_we_n} <= 4'b0000;
-                    sdram_addr <= 13'b000_0_00_011_0_000; // CL=3, Burst=1
-                    timer <= 0;
-                    state <= IDLE;
-                end
-            end
-            IDLE: begin
-                dq_oe <= 0;
-                if (wr_req) begin
-                    sdram_ba <= addr[23:22];
-                    sdram_addr <= addr[21:9];
-                    timer <= 0;
-                    state <= ACT;
-                end else if (rd_req) begin
-                    sdram_ba <= addr[23:22];
-                    sdram_addr <= addr[21:9];
-                    timer <= 0;
-                    state <= ACT;
-                end
-            end
-            ACT: begin
-                {sdram_cs_n, sdram_ras_n, sdram_cas_n, sdram_we_n} <= 4'b0011;
-                if (timer < tRCD) timer <= timer + 1;
-                else begin
-                    timer <= 0;
-                    if (wr_req) state <= WRITE;
-                    else state <= READ;
-                end
-            end
-            WRITE: begin
-                {sdram_cs_n, sdram_ras_n, sdram_cas_n, sdram_we_n} <= 4'b0100;
-                sdram_addr <= {3'b0, addr[8:0]};
-                dq_out <= wr_data;
-                dq_oe <= 1;
-                wr_ready <= 1;
-                timer <= 0;
-                state <= DONE;
-            end
-            READ: begin
-                {sdram_cs_n, sdram_ras_n, sdram_cas_n, sdram_we_n} <= 4'b0101;
-                sdram_addr <= {3'b0, addr[8:0]};
-                dq_oe <= 0;
-                if (timer < tCAS) timer <= timer + 1;
-                else begin
-                    rd_data <= sdram_dq;
-                    rd_ready <= 1;
-                    timer <= 0;
-                    state <= DONE;
-                end
-            end
-            DONE: begin
-                dq_oe <= 0;
-                state <= IDLE;
-            end
-        endcase
-    end
-end
-
-endmodule
+        if(input.startsWith("W") && input.length() == 11) {
+            uint32_t addr = strtoul(input.substring(1,7).c_str(), NULL, 16);
+            uint16_t data = strtoul(input.substring(7).c_str(), NULL, 16);
+            
+            if(sendCommand('W', addr, data)) {
+                Serial.print("Wrote 0x");
+                Serial.print(data, HEX);
+                Serial.print(" @0x");
+                Serial.println(addr, HEX);
+            } else {
+                Serial.println("Write failed");
+            }
+        }
+        else if(input.startsWith("R") && input.length() == 7) {
+            uint32_t addr = strtoul(input.substring(1).c_str(), NULL, 16);
+            
+            if(sendCommand('R', addr)) {
+                uint16_t data = readResponse();
+                if(data != 0xFFFF) {
+                    Serial.print("Read 0x");
+                    Serial.print(data, HEX);
+                    Serial.print(" @0x");
+                    Serial.println(addr, HEX);
+                } else {
+                    Serial.println("Read timeout");
+                }
+            } else {
+                Serial.println("Read command failed");
+            }
+        }
+        else if(input == "DUMP") {
+            Serial.println("Dumping first 10 rows:");
+            for(uint32_t row=0; row<10; row++) {
+                for(uint32_t col=0; col<ROW_SIZE; col++) {
+                    uint32_t addr = (row << 10) | col;
+                    if(sendCommand('R', addr)) {
+                        uint16_t data = readResponse();
+                        Serial.print("[0x");
+                        Serial.print(addr, HEX);
+                        Serial.print("] = 0x");
+                        Serial.println(data, HEX);
+                    }
+                    if(col % 16 == 0) Serial.flush();
+                }
+            }
+            Serial.println("Dump complete");
+        }
+        else if(input == "TEST") {
+            Serial.println("Running March C- test...");
+            uint32_t errors = 0;
+            
+            // Write pattern
+            for(uint32_t addr=0; addr<0x1FFFFF; addr++) {
+                if(!sendCommand('W', addr, 0xAAAA)) errors++;
+            }
+            
+            // Verify pattern
+            for(uint32_t addr=0; addr<0x1FFFFF; addr++) {
+                if(sendCommand('R', addr)) {
+                    if(readResponse() != 0xAAAA) errors++;
+                }
+            }
+            
+            Serial.print("Test complete. Errors: ");
+            Serial.println(errors);
+        }
+    }
+}
